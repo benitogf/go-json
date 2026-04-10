@@ -9,9 +9,38 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/goccy/go-json/internal/errors"
-	"github.com/goccy/go-json/internal/runtime"
+	"github.com/benitogf/go-json/internal/errors"
+	"github.com/benitogf/go-json/internal/runtime"
 )
+
+func CompileToGetCodeSet(ctx *RuntimeContext, typeptr uintptr) (*OpcodeSet, error) {
+	initEncoder()
+	if typeptr > typeAddr.MaxTypeAddr || typeptr < typeAddr.BaseTypeAddr {
+		codeSet, err := compileToGetCodeSetSlowPath(typeptr)
+		if err != nil {
+			return nil, err
+		}
+		return getFilteredCodeSetIfNeeded(ctx, codeSet)
+	}
+	index := (typeptr - typeAddr.BaseTypeAddr) >> typeAddr.AddrShift
+	if codeSet := cachedOpcodeSets[index].Load(); codeSet != nil {
+		filtered, err := getFilteredCodeSetIfNeeded(ctx, codeSet)
+		if err != nil {
+			return nil, err
+		}
+		return filtered, nil
+	}
+	codeSet, err := newCompiler().compile(typeptr)
+	if err != nil {
+		return nil, err
+	}
+	filtered, err := getFilteredCodeSetIfNeeded(ctx, codeSet)
+	if err != nil {
+		return nil, err
+	}
+	cachedOpcodeSets[index].Store(codeSet)
+	return filtered, nil
+}
 
 type marshalerContext interface {
 	MarshalJSON(context.Context) ([]byte, error)
@@ -22,7 +51,7 @@ var (
 	marshalJSONContextType = reflect.TypeOf((*marshalerContext)(nil)).Elem()
 	marshalTextType        = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
 	jsonNumberType         = reflect.TypeOf(json.Number(""))
-	cachedOpcodeSets       []*OpcodeSet
+	cachedOpcodeSets       []atomic.Pointer[OpcodeSet]
 	cachedOpcodeMap        unsafe.Pointer // map[uintptr]*OpcodeSet
 	typeAddr               *runtime.TypeAddr
 	initEncoderOnce        sync.Once
@@ -34,7 +63,7 @@ func initEncoder() {
 		if typeAddr == nil {
 			typeAddr = &runtime.TypeAddr{}
 		}
-		cachedOpcodeSets = make([]*OpcodeSet, typeAddr.AddrRange>>typeAddr.AddrShift+1)
+		cachedOpcodeSets = make([]atomic.Pointer[OpcodeSet], typeAddr.AddrRange>>typeAddr.AddrShift+1)
 	})
 }
 
@@ -493,7 +522,7 @@ func (c *Compiler) listElemCode(typ *runtime.Type) (Code, error) {
 	default:
 		// isPtr was originally used to indicate whether the type of top level is pointer.
 		// However, since the slice/array element is a specification that can get the pointer address, explicitly set isPtr to true.
-		// See here for related issues: https://github.com/goccy/go-json/issues/370
+		// See here for related issues: https://github.com/benitogf/go-json/issues/370
 		code, err := c.typeToCodeWithPtr(typ, true)
 		if err != nil {
 			return nil, err

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/benitogf/go-json"
 )
 
 type queryTestX struct {
